@@ -1,0 +1,14 @@
+# Core app
+streamlit>=1.32
+numpy>=1.24
+Pillow>=9.5
+opencv-python-headless>=4.8
+reportlab>=4.0
+
+# Model (real CNN grading). CPU wheels are fine; GPU optional.
+torch>=2.0
+torchvision>=0.15
+timm>=0.9.12
+
+# Only needed if you set HF_REPO in config.py to pull weights from HuggingFace
+huggingface_hub>=0.20

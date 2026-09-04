@@ -1,0 +1,27 @@
+[server]
+headless = true
+address = "0.0.0.0"
+port = 8501
+enableCORS = false
+enableXsrfProtection = false
+maxUploadSize = 30
+
+# --- Offline camera on a phone (see README) ---------------------------------
+# Browsers only allow camera access over https:// or http://localhost.
+# To use the phone Camera tab over your LAN, generate a self-signed cert and
+# uncomment these two lines (then open https://<laptop-ip>:8501 and accept
+# the certificate warning). File UPLOAD works over plain http with no cert.
+#
+#   openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem -days 365 -subj "/CN=retinascan"
+#
+# sslCertFile = "cert.pem"
+# sslKeyFile = "key.pem"
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "light"
+primaryColor = "#0b6e4f"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f4f7f9"
