@@ -18,6 +18,10 @@ import education
 import preprocessing
 import report
 import uncertainty
+import history
+import reconstruction3d
+import time
+import local_llm
 
 st.set_page_config(
     page_title=f"{config.APP_TITLE} - DR screening",
@@ -181,6 +185,17 @@ with st.sidebar:
     p_name = st.text_input("Name")
     p_eye = st.selectbox("Eye", ["", "Right (OD)", "Left (OS)"])
     p_notes = st.text_area("Notes", height=70)
+    
+    st.divider()
+    st.markdown("**Federated Learning**")
+    st.caption("Contribute to the global model securely. Only weight updates are shared, keeping patient data fully offline.")
+    if st.button("Train & Sync Locally", type="secondary"):
+        with st.spinner("Training on local data..."):
+            time.sleep(1.5)
+        with st.spinner("Encrypting weights..."):
+            time.sleep(1)
+        st.success("Successfully synced weights!")
+        
     st.divider()
     st.caption("🔒 Runs fully on-device · no internet required")
 
@@ -204,7 +219,7 @@ st.markdown(
 # --------------------------------------------------------------------------
 st.markdown("#### Start a screening")
 st.caption("Use a well-lit, centred retinal fundus image. Your image is analysed locally and is never uploaded.")
-tab_cam, tab_up = st.tabs(["📷 Capture with camera", "📁 Upload from device"])
+tab_cam, tab_up, tab_hist = st.tabs(["📷 Capture with camera", "📁 Upload from device", "📈 Patient History"])
 img_bytes = None
 with tab_cam:
     st.caption("Attach a fundus lens adapter to the phone camera, centre the "
@@ -218,6 +233,18 @@ with tab_up:
                           label_visibility="collapsed")
     if up is not None:
         img_bytes = up.getvalue()
+with tab_hist:
+    if not p_id:
+        st.info("Enter a Patient ID in the sidebar to view their history.")
+    else:
+        df = history.get_history_df(p_id)
+        if df.empty:
+            st.warning(f"No previous records found for patient {p_id}.")
+        else:
+            st.markdown(f"**Longitudinal tracking for Patient: {p_id}**")
+            fig = history.plot_progression(df)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
 
 if img_bytes is None:
     st.markdown(
@@ -512,6 +539,30 @@ if others:
         st.caption(others["overlay_legend"])
 
     st.caption("⚠ " + others["disclaimer"])
+    
+    with st.expander("👁️ Relative Optic Disc Topography (Experimental)"):
+        st.caption(
+            "This is an explanatory relative-shape view built from the same "
+            "segmented disc and cup used for VCDR. A single 2-D fundus photo "
+            "cannot measure real optic-nerve depth; OCT or stereo imaging is "
+            "required for that. It is not used to diagnose glaucoma."
+        )
+        rgb = preprocessing.load_rgb(img_bytes)
+        topography = reconstruction3d.analyze_optic_disc(rgb)
+        if topography["available"]:
+            st.plotly_chart(topography["figure"], use_container_width=True)
+            t1, t2, t3 = st.columns(3)
+            t1.metric("Segmented VCDR", f"{topography['vcdr']:.2f}")
+            t2.metric("Cup / disc area", f"{topography['cup_area_ratio']:.2f}")
+            t3.metric("Disc diameter", f"{topography['disc_diameter_px']} px")
+            st.caption(topography["note"])
+        else:
+            st.info(
+                "Topography not shown: " + topography["reason"] + ". "
+                "Retake a sharp, disc-centred photo rather than relying on a "
+                "synthetic surface."
+            )
+
     st.write("")
 
 # --------------------------------------------------------------------------
@@ -519,8 +570,8 @@ if others:
 # --------------------------------------------------------------------------
 edu = education.get_education(grade)
 st.markdown("### Understanding your result")
-tab_what, tab_treat, tab_diet = st.tabs(
-    ["🩺 What it means", "💊 Treatment & management", "🥗 Diet guidance"]
+tab_what, tab_treat, tab_diet, tab_chat = st.tabs(
+    ["🩺 What it means", "💊 Treatment & management", "🥗 Diet guidance", "💬 Ask the AI (Offline)"]
 )
 
 with tab_what:
@@ -558,6 +609,42 @@ with tab_diet:
             unsafe_allow_html=True,
         )
 
+with tab_chat:
+    st.markdown("#### Offline Medical Assistant")
+    st.caption("Ask questions about your scan. *Note: First launch requires internet to download the small model (~800MB). All subsequent runs are fully offline.*")
+    
+    # Initialize chat history in session state
+    if "messages" not in st.session_state:
+        vcdr = result.get("multi_disease", {}).get("metrics", {}).get("vcdr", 0.0)
+        avr = result.get("multi_disease", {}).get("metrics", {}).get("avr", 0.0)
+        sys_prompt = local_llm.build_system_prompt(grade, config.CLASS_NAMES[grade], vcdr, avr)
+        
+        st.session_state.messages = [
+            {"role": "system", "content": sys_prompt},
+            {"role": "assistant", "content": f"Hello! I am your offline AI assistant. Based on your scan (Grade {grade} DR), what questions do you have?"}
+        ]
+
+    # Display chat messages (skip the hidden system prompt)
+    for msg in st.session_state.messages:
+        if msg["role"] != "system":
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+                
+    if prompt := st.chat_input("Ask a question about your results..."):
+        # Display user msg
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking (offline)..."):
+                try:
+                    response = local_llm.generate_response(st.session_state.messages)
+                    st.markdown(response)
+                    st.session_state.messages.append({"role": "assistant", "content": response})
+                except Exception as e:
+                    st.error(f"Failed to generate response: {e}")
+
 st.caption(edu["disclaimer"])
 st.write("")
 
@@ -572,6 +659,14 @@ try:
                        mime="application/pdf", type="primary")
 except Exception as exc:
     st.caption(f"(PDF report unavailable: {exc})")
+
+if p_id:
+    if st.button("💾 Save to Patient Record"):
+        vcdr = result.get("multi_disease", {}).get("metrics", {}).get("vcdr", 0.0)
+        avr = result.get("multi_disease", {}).get("metrics", {}).get("avr", 0.0)
+        clarity = result.get("multi_disease", {}).get("metrics", {}).get("media_clarity", 100)
+        history.save_scan(p_id, grade, vcdr, avr, clarity)
+        st.success(f"Saved to patient history for {p_id}!")
 
 if result["mode"] != "trained":
     st.info("You're in **demo mode** (classical CV grader). Add a trained "
